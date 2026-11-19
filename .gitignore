@@ -9,6 +9,8 @@ wpa_supplicant*.conf
 *.key
 *.pem
 tpp06_ui.conf
+secrets.yaml
+esphome/secrets.yaml
 
 # ─── Volcados del device / firmware de terceros (copyright / claves únicas) ───
 nand-backup/
