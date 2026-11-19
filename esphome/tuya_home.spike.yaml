@@ -1,0 +1,160 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SPIKE de migración: pantalla "home" de Tuya recreada en ESPHome lvgl (NATIVO)
+#
+# Objetivo: de-riesgar la migración probando SOLO la capa de UI (lo que es nuestro
+# y portable). Demuestra: fuentes Manrope horneadas al tamaño exacto, wallpaper
+# e icono reales de Tuya como imágenes, y binding de hora/fecha/clima a HA.
+#
+# NO depende de código de Philiphall6 (su repo no tiene licencia = derechos
+# reservados). El `lvgl:` que uso aquí es upstream de ESPHome, no suyo.
+#
+# Coordenadas 1:1 de ui-lvgl/tuya_home.c (reloj estilo 0 de theme/desktop.lua):
+#   wallpaper theme/bg/00.png · icono clima @ (24,29) · temp M19 @ (68,37)
+#   fecha M16 @ (30,66) · hora M90 centrada y=95.
+#
+# GATED: compilar/ver requiere el panel recuperado + toolchain. Esto es texto.
+# PENDIENTE (glue de hardware, decisión aparte): el bloque `host:` + display
+# (fbdev) + táctil (evdev) + backlight/relés. Ver esphome/README.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+esphome:
+  name: tpp06-panel
+  # min_version, platformio_options, etc. van en el config completo.
+
+# --- Conexión a Home Assistant (API nativa cifrada, reemplaza a nuestro ha_ws) ---
+api:
+  # encryption.key: !secret api_key   # nunca en git; va en secrets.yaml del device
+
+logger:
+
+# ──────────────── IMÁGENES (se hornean en compilación desde los PNG reales) ────
+# Los PNG viven en tuya-fw/img (copyright Tuya, gitignored). En el build real se
+# copian a esphome/assets/ o se referencia la ruta. Aquí dejo la ruta relativa.
+image:
+  - file: ../tuya-fw/img/theme/bg/00.png     # wallpaper real de Tuya, 320x480
+    id: img_wallpaper
+    type: RGB565
+    resize: 320x480
+  - file: ../tuya-fw/img/weather/36/sunny.png
+    id: img_weather
+    type: RGB565
+    transparency: alpha_channel              # el icono trae alfa
+
+# ──────────────── FUENTES Manrope (bitmap horneado POR TAMAÑO) ─────────────────
+# gfonts:// descarga Manrope de Google Fonts CON el peso exacto -> resuelve el
+# problema de peso que teníamos con la variable-font en C (rendía ~400).
+# Nota: cada tamaño es una fuente aparte; el reloj (90px) limita glyphs a
+# dígitos+":" para no inflar flash.
+font:
+  - file: "gfonts://Manrope@500"
+    id: manrope_90
+    size: 90
+    bpp: 4
+    glyphs: ["0123456789:"]                   # glyphs = LISTA (doc)
+  - file: "gfonts://Manrope@500"
+    id: manrope_19
+    size: 19
+    bpp: 4
+    glyphsets: [GF_Latin_Kernel, GF_Latin_Core]  # Kernel = nº+espacio; Core = acentos ES
+    glyphs: ["°"]
+  - file: "gfonts://Manrope@400"
+    id: manrope_16
+    size: 16
+    bpp: 4
+    glyphsets: [GF_Latin_Kernel, GF_Latin_Core]
+
+# ──────────────── DATOS DE HA que alimentan la pantalla ───────────────────────
+time:
+  - platform: homeassistant
+    id: ha_time
+
+sensor:
+  - platform: homeassistant
+    id: ha_temp
+    entity_id: weather.home
+    attribute: temperature
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_temp
+            text: !lambda |-
+              char buf[8];
+              snprintf(buf, sizeof(buf), "%.0f°", x);
+              return std::string(buf);
+
+text_sensor:
+  - platform: homeassistant
+    id: ha_weather_state
+    entity_id: weather.home
+    # (más adelante: mapear el estado -> icono weather/36/<estado>.png)
+
+# Reloj: refresco local cada segundo desde la hora de ESPHome.
+interval:
+  - interval: 1s
+    then:
+      - lvgl.label.update:
+          id: lbl_clock
+          text: !lambda |-
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char buf[6];
+            snprintf(buf, sizeof(buf), "%02d:%02d", t.hour, t.minute);
+            return std::string(buf);
+      - lvgl.label.update:
+          id: lbl_date
+          text: !lambda |-
+            static const char* d[] = {"dom","lun","mar","mié","jue","vie","sáb"};
+            static const char* m[] = {"ene","feb","mar","abr","may","jun",
+                                      "jul","ago","sep","oct","nov","dic"};
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("");
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%s %d %s",
+                     d[t.day_of_week-1], t.day_of_month, m[t.month-1]);
+            return std::string(buf);
+
+# ──────────────── LA UI (equivale a tuya_home_build) ──────────────────────────
+lvgl:
+  # displays: [tpp06_display]        # <- lo aporta el componente de display (glue)
+  pages:
+    - id: page_home
+      bg_color: 0x000000
+      widgets:
+        # Wallpaper a pantalla completa
+        - image:
+            src: img_wallpaper
+            align: TOP_LEFT
+            x: 0
+            y: 0
+        # Icono de clima @ (24,29)
+        - image:
+            src: img_weather
+            align: TOP_LEFT
+            x: 24
+            y: 29
+        # Temperatura Manrope 19 blanco @ (68,37)
+        - label:
+            id: lbl_temp
+            text: "26°"
+            text_font: manrope_19
+            text_color: 0xFFFFFF
+            align: TOP_LEFT
+            x: 68
+            y: 37
+        # Fecha Manrope 16 blanco @ (30,66)
+        - label:
+            id: lbl_date
+            text: "lun 24 jun"
+            text_font: manrope_16
+            text_color: 0xFFFFFF
+            align: TOP_LEFT
+            x: 30
+            y: 66
+        # Hora grande Manrope 90 blanco, centrada, y=95
+        - label:
+            id: lbl_clock
+            text: "06:30"
+            text_font: manrope_90
+            text_color: 0xFFFFFF
+            align: TOP_MID
+            y: 95
