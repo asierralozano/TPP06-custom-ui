@@ -1,0 +1,68 @@
+#!/bin/sh
+
+ifconfig lo 127.0.0.1
+
+#on/off debug uart
+#U_VALUE=$(nvram show | grep -w "\[uart_debug\]" | awk '{print $2}' | grep -i on)
+#if [ "$U_VALUE" == "[on]" ]; then
+#	echo 0 > /proc/uart_debug/value
+#fi
+
+# Set Global Environment
+source /etc/profile
+
+insmod /usr/modules/ak_ion.ko
+insmod /usr/modules/ak_gui.ko
+insmod /usr/modules/ak_uio.ko
+modprobe ak_pwm_char.ko
+modprobe pwm_bl
+modprobe ak_fb.ko lcdc_wait_mode=1
+modprobe srgb_lcd.ko
+
+# gpiokey
+#insmod /usr/modules/ak_gpio_keys.ko
+
+# butten-led
+insmod /usr/modules/ak_leds.ko
+
+# adbd
+modprobe usb_f_fs.ko
+modprobe usb_f_mass_storage
+modprobe usbcore
+insmod /usr/modules/ak_udc.ko
+/etc/init.d/S50adbd start
+
+# touch panel
+insmod /usr/modules/ak_i2c.ko combined_format=1
+modprobe gt1
+
+# cw2015
+#modprobe cw2015
+
+# wifi
+modprobe cfg80211
+modprobe mmc_core
+insmod /usr/modules/ak_mci.ko
+echo 0 > /sys/class/gpio/WIFI_PWREN/value
+insmod /usr/modules/rtl8723ds.ko
+ifconfig wlan0 up
+
+#bluetooth
+echo 0 > /sys/class/gpio/BT_RST_N/value
+sleep 1
+echo 1 > /sys/class/gpio/BT_RST_N/value
+insmod /lib/modules/hci_uart.ko
+rtk_hciattach -n -s 115200 /dev/ttySAK1 rtk_h5 &
+
+# udev
+/etc/init.d/S10udev start
+
+if [  -e /etc/init.d/S03zramctl ]; then
+	/etc/init.d/S03zramctl start
+fi
+
+#ak_watchdog timeout:20  keepalive:10
+/bin/ak_watchdog 20 10 &
+
+# tuya-app
+/etc/init.d/S99tuya-app start

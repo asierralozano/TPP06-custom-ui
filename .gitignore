@@ -1,0 +1,33 @@
+# ─── Secretos / config de dispositivo (NUNCA a git) ───
+agent/tpp06.conf
+*.conf
+!*.example.conf
+!*.sample.conf
+wifi*.conf
+wpa_supplicant*.conf
+*.token
+*.key
+*.pem
+tpp06_ui.conf
+
+# ─── Volcados del device / firmware de terceros (copyright / claves únicas) ───
+nand-backup/
+tuya-fw/
+*.raw
+fb_capture.*
+
+# ─── Dependencia vendorizada: LVGL v8.3.11 (re-clonable; nuestro fix está en fonts.c) ───
+# git clone --branch v8.3.11 https://github.com/lvgl/lvgl ui-lvgl/lvgl
+ui-lvgl/lvgl/
+
+# ─── Artefactos de build (se regeneran) ───
+ui-lvgl/tpp06_lvgl
+ui-lvgl/sim/sim_render
+ui-lvgl/sim/sim_nav
+ui-lvgl/sim/test_font
+ui-lvgl/sim/*.bmp
+*.o
+*.a
+
+# ─── macOS ───
+.DS_Store
