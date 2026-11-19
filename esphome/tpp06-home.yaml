@@ -1,0 +1,212 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TPP06 · Config ESPHome COMPLETA y compilable: glue de Philiphall6 + UI nuestra
+#
+# Base de hardware = repo comunitario Philiphall6 (con su permiso explícito para
+# usar su repo y sus avances). Su glue se consume POR REFERENCIA (external_components
+# git, fijado al tag v0.1.7) — no vendorizamos su código, su código vive en su repo.
+#
+# UI = nuestro clon 1:1 de Tuya, pantalla "home" (de ui-lvgl/tuya_home.c), re-expresada
+# en el lvgl: nativo de ESPHome. Coordenadas 1:1 del firmware.
+#
+# Secretos (clave de API, etc.) van en secrets.yaml del device, NUNCA en git.
+# Assets PNG en ../tuya-fw/img (copyright Tuya, gitignored; presentes en local).
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  device_name: "tpp06-panel"
+  friendly_name: "TPP06 Panel"
+  framebuffer_device: "/dev/fb0"
+  touchscreen_device: "/dev/input/event1"
+  weather_entity: "weather.home"
+  api_encryption_key: !secret tpp06_api_encryption_key
+
+# ───────────────────────── GLUE (Philiphall6, con permiso) ───────────────────
+esphome:
+  name: "${device_name}"
+  friendly_name: "${friendly_name}"
+  build_flags:
+    - -static
+    - -Wl,--strip-all
+    - -pthread
+    - -fno-threadsafe-statics
+    - -Wl,-u,pthread_mutex_lock
+    - -Wl,-u,pthread_mutex_init
+    - -Wl,-u,pthread_mutex_trylock
+    - -Wl,-u,pthread_mutex_unlock
+    - -Wl,-u,pthread_mutex_destroy
+    - -Wl,-u,pthread_self
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/Philiphall6/TPP06-smart-panel-project
+      ref: v0.1.7            # fijado a tag estable (no 'main') para reproducibilidad
+      path: esphome-components
+    components:
+      - evdev               # táctil goodix  -> /dev/input/event1
+      - fbdev               # display        -> /dev/fb0
+      - host                # plataforma Linux Anyka (cross-compile)
+      - md5
+      - sha256
+      - tpp06_compat
+      - tpp06_mdns
+      # (más adelante: tpp06_backlight para el brillo, tpp06_local_relays para relés)
+
+host:
+  use_address: "${device_name}.local"
+  network_interface: wlan0
+  cross_compile: {}
+
+tpp06_compat:
+
+mdns:
+  disabled: false
+tpp06_mdns:
+  network_interface: wlan0
+
+logger:
+  level: INFO
+
+api:
+  reboot_timeout: 0s
+  encryption:
+    key: "${api_encryption_key}"
+
+ota:
+  - platform: esphome
+    encryption:
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+display:
+  - platform: fbdev
+    id: tpp06_display
+    device: "${framebuffer_device}"
+    pixel_format: RGB565      # valor verificado por scanout (su metadata dice BGR565)
+    dimensions:
+      width: 320
+      height: 480
+    auto_clear_enabled: false
+    update_interval: never
+
+touchscreen:
+  - platform: evdev
+    id: tpp06_touch
+    display: tpp06_display
+    device: "${touchscreen_device}"
+    update_interval: 20ms
+    calibration:
+      x_min: 0
+      x_max: 320
+      y_min: 0
+      y_max: 480
+
+# ──────────────────────────── UI NUESTRA (clon Tuya) ─────────────────────────
+# Imágenes reales de Tuya (horneadas en compilación).
+image:
+  - file: ../tuya-fw/img/theme/bg/00.png
+    id: img_wallpaper
+    type: RGB565
+    resize: 320x480
+  - file: ../tuya-fw/img/weather/36/sunny.png
+    id: img_weather
+    type: RGB565
+    transparency: alpha_channel
+
+# Fuentes Manrope horneadas al tamaño exacto; gfonts da el PESO exacto
+# (resuelve el problema de peso de la variable-font en C, que rendía ~400).
+font:
+  - file: "gfonts://Manrope@500"
+    id: manrope_90
+    size: 90
+    bpp: 4
+    glyphs: ["0123456789:"]                       # reloj: dígitos + dos puntos
+  - file: "gfonts://Manrope@500"
+    id: manrope_19
+    size: 19
+    bpp: 4
+    glyphsets: [GF_Latin_Kernel, GF_Latin_Core]   # Kernel=nº/espacio, Core=acentos
+    glyphs: ["°"]
+  - file: "gfonts://Manrope@400"
+    id: manrope_16
+    size: 16
+    bpp: 4
+    glyphsets: [GF_Latin_Kernel, GF_Latin_Core]
+
+# Datos de HA que alimentan la home (temperatura del weather).
+sensor:
+  - platform: homeassistant
+    id: ha_temp
+    entity_id: "${weather_entity}"
+    attribute: temperature
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_temp
+            text: !lambda |-
+              char buf[8];
+              snprintf(buf, sizeof(buf), "%.0f°", x);
+              return std::string(buf);
+
+# Reloj y fecha: refresco local desde la hora de ESPHome (sincronizada por HA).
+interval:
+  - interval: 1s
+    then:
+      - lvgl.label.update:
+          id: lbl_clock
+          text: !lambda |-
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            char buf[6];
+            snprintf(buf, sizeof(buf), "%02d:%02d", t.hour, t.minute);
+            return std::string(buf);
+      - lvgl.label.update:
+          id: lbl_date
+          text: !lambda |-
+            static const char* d[] = {"dom","lun","mar","mié","jue","vie","sáb"};
+            static const char* m[] = {"ene","feb","mar","abr","may","jun",
+                                      "jul","ago","sep","oct","nov","dic"};
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("");
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%s %d %s",
+                     d[t.day_of_week-1], t.day_of_month, m[t.month-1]);
+            return std::string(buf);
+
+lvgl:
+  displays: tpp06_display
+  touchscreens:
+    - touchscreen_id: tpp06_touch
+  buffer_size: 25%
+  bg_color: 0x000000
+  pages:
+    - id: page_home
+      bg_color: 0x000000
+      widgets:
+        - image: { src: img_wallpaper, align: top_left, x: 0, y: 0 }
+        - image: { src: img_weather,   align: top_left, x: 24, y: 29 }
+        - label:
+            id: lbl_temp
+            text: "26°"
+            text_font: manrope_19
+            text_color: 0xFFFFFF
+            align: top_left
+            x: 68
+            y: 37
+        - label:
+            id: lbl_date
+            text: "lun 24 jun"
+            text_font: manrope_16
+            text_color: 0xFFFFFF
+            align: top_left
+            x: 30
+            y: 66
+        - label:
+            id: lbl_clock
+            text: "06:30"
+            text_font: manrope_90
+            text_color: 0xFFFFFF
+            align: top_mid
+            y: 95
